@@ -1,0 +1,225 @@
+---
+title: "Structural Learning and Transfer - Training Phase"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+
+```
+## Install new packages
+```{r}
+#install.packages('plotrix')
+#install.packages("grid")
+#install.packages("reshape")
+#install.packages("ez")
+#install.packages("Cairo")
+```
+## Load packages
+```{r Load packages}
+library(plyr)
+library(ggplot2)
+library(plotrix)
+#library(grid)
+#library(gridExtra)
+#library(lattice)
+#library(reshape) # This one interferes with dplyr...don't use it.
+library(ez)
+library(dplyr)
+library(afex)
+```
+## Column rearranger
+```{r}
+##arrange df vars by position
+##'vars' must be a named vector, e.g. c("var.name"=1)
+arrange.vars <- function(data, vars){
+    ##stop if not a data.frame (but should work for matrices as well)
+    stopifnot(is.data.frame(data))
+
+    ##sort out inputs
+    data.nms <- names(data)
+    var.nr <- length(data.nms)
+    var.nms <- names(vars)
+    var.pos <- vars
+    ##sanity checks
+    stopifnot( !any(duplicated(var.nms)), 
+               !any(duplicated(var.pos)) )
+    stopifnot( is.character(var.nms), 
+               is.numeric(var.pos) )
+    stopifnot( all(var.nms %in% data.nms) )
+    stopifnot( all(var.pos > 0), 
+               all(var.pos <= var.nr) )
+
+    ##prepare output
+    out.vec <- character(var.nr)
+    out.vec[var.pos] <- var.nms
+    out.vec[-var.pos] <- data.nms[ !(data.nms %in% var.nms) ]
+    stopifnot( length(out.vec)==var.nr )
+
+    ##re-arrange vars by position
+    data <- data[ , out.vec]
+    return(data)
+}
+```
+## Load in Data
+```{r Load in Data, include=FALSE}
+#setwd("//Volumes//mnl//Data//UURAF Projects//UURAF 2019 Structural Learning and Transfer//Post_Step_3") # Mac - exp1
+#setwd("//Volumes//mnl//Data//UURAF Projects//UURAF 2019 Structural Learning and Transfer//Post_Step_3_RH") # Mac - exp2
+setwd("//35.8.175.161/mnl/Data/UURAF Projects/UURAF 2019 Structural Learning and Transfer/Post_Step_3") # PC - exp2
+#setwd("Z:\\Data\\UURAF Projects\\UURAF 2019 Structural Learning and Transfer\\Post_Step_3_RH") # PC - exp2
+trainData = read.delim('train_raw',header = FALSE, sep = ",", na.strings = 'NaN')
+
+numGroup = 2 # Number of groups (works only for my current dataset)
+
+colnames(trainData) = c('group', 'subjectID', 'trial', 'target_theta',
+                     'MT', 'MT_c', 'MT_st',
+                     'rmse', 'rmse_c', 'rmse_st',
+                     'ide', 'ide_c', 'ide_st',
+                     'norm_jerk', 'norm_jerk_c', 'norm_jerk_st',
+                     'mov_int', 'mov_int_c', 'mov_int_st',
+                     'end_X_pos', 'end_Y_pos',
+                     'tstamp_start', 'tstamp_end',
+                     'velPeak', 'velPeak_c', 'velPeak_st',
+                     'velPeakTime', 'velPeakTime_c', 'velPeakTime_st',
+                     'RT', 'RT_c', 'RT_st',
+                     'wrong_trial')
+
+factors = c('group', 'subjectID')
+trainData[,factors] = lapply(trainData[,factors], factor)
+
+# This will get rid of oulier subjects BEFORE generating the dataset to follow.
+outliers = c(0)
+
+for (i in 1:length(outliers)){
+trainData = subset(trainData, trainData$subjectID != outliers[i])
+}
+numSub = nrow(trainData)/272 # number of subjects in the data.frame (scrubbed of outliers)
+numTrial = nrow(trainData)/numSub # number of trials per subject
+
+# Rename entries for target_theta to indicate whether trial was "up" (90 deg), or "down" (270 deg)
+trainData$target_theta = as.character(trainData$target_theta)
+trainData$target_theta = revalue(trainData$target_theta, c("4.712389" = "down", "1.570796" = "up"))
+trainData$target_theta = as.factor(trainData$target_theta)
+
+# Normalize to baseline. I will make a new variable (*.bc) that subtracts the mean of all KB trials from all values.
+# WARNING: If you get this error 'replacement has length zero' it is because plyr was loaded and is interfering with dplyr. You can fix it by putting "dplyr::" in front of the function. EXAMPLE - dplyr::group_by() %>% dplyr::summarise(). A better fix is to load dplyr AFTER plyr in the package installation chunk.
+
+# Apply to ide_c
+temp = trainData %>% select(c(group, subjectID, trial, ide_c)) %>% filter(trial %in% 1:16) %>% group_by(subjectID) %>% summarise(avg.ide.kb = mean(ide_c, na.rm = TRUE))
+temp2 = data.frame(matrix(ncol = 2, nrow = numSub*272))
+for(i in 1:numSub){
+  temp2$X1[(272*(i-1)+1):(272*i)] = rep(temp$subjectID[i],272)
+  temp2$X2[(272*(i-1)+1):(272*i)] = rep(temp$avg.ide.kb[i],272)
+}
+trainData$ide.bc = trainData$ide_c - temp2$X2
+rm(temp, temp2) # Clean up workspace
+
+# Apply to rmse_c
+temp = trainData %>% select(c(group, subjectID, trial, rmse_c)) %>% filter(trial %in% 1:16) %>% group_by(subjectID) %>% summarise(avg.rmse.kb = mean(rmse_c, na.rm = TRUE))
+temp2 = data.frame(matrix(ncol = 2, nrow = numSub*272))
+for(i in 1:numSub){
+  temp2$X1[(272*(i-1)+1):(272*i)] = rep(temp$subjectID[i],272)
+  temp2$X2[(272*(i-1)+1):(272*i)] = rep(temp$avg.rmse.kb[i],272)
+}
+trainData$rmse.bc = trainData$rmse_c - temp2$X2
+rm(temp, temp2) # Clean up workspace
+
+# Apply to mov_int_c
+temp = trainData %>% select(c(group, subjectID, trial, mov_int_c)) %>% filter(trial %in% 1:16) %>% group_by(subjectID) %>% summarise(avg.mov_int.kb = mean(mov_int_c, na.rm = TRUE))
+temp2 = data.frame(matrix(ncol = 2, nrow = numSub*272))
+for(i in 1:numSub){
+  temp2$X1[(272*(i-1)+1):(272*i)] = rep(temp$subjectID[i],272)
+  temp2$X2[(272*(i-1)+1):(272*i)] = rep(temp$avg.mov_int.kb[i],272)
+}
+trainData$mov_int.bc = trainData$mov_int_c - temp2$X2
+rm(temp, temp2) # Clean up workspace
+
+# Apply to norm_jerk_c
+temp = trainData %>% select(c(group, subjectID, trial, norm_jerk_c)) %>% filter(trial %in% 1:16) %>% group_by(subjectID) %>% summarise(avg.norm_jerk.kb = mean(norm_jerk_c, na.rm = TRUE))
+temp2 = data.frame(matrix(ncol = 2, nrow = numSub*272))
+for(i in 1:numSub){
+  temp2$X1[(272*(i-1)+1):(272*i)] = rep(temp$subjectID[i],272)
+  temp2$X2[(272*(i-1)+1):(272*i)] = rep(temp$avg.norm_jerk.kb[i],272)
+}
+trainData$norm_jerk.bc = trainData$norm_jerk_c - temp2$X2
+rm(temp, temp2) # Clean up workspace
+
+# Some trials have RT less than 100ms (which is inhuman). Need to replace these values with NA, as well as velPeakTime
+trainData = trainData %>%
+  mutate(velPeakTime_c = replace(velPeakTime_c, which(RT_c < 100), NA)) %>%
+  mutate(MT_c = replace(MT_c, which(RT_c < 100), NA)) %>%
+  mutate(mov_int_c = replace(mov_int_c, which(RT_c < 100), NA)) %>%
+  mutate(RT_c = replace(RT_c, which(RT_c < 100), NA)) # WARNING: RT_c has to be last in this chain.
+
+# Define trial numbers for the different phases
+vb = 1:16
+ex = 17:256
+pe = 257:272
+```
+
+## Data Wrangling
+```{r Caclulate means}
+# Create 'block' factor
+nr = nrow(trainData)
+blockSize = 4
+trainData$block = as.factor(rep(1:(numTrial/blockSize), each = blockSize, times = numSub))
+trainData = arrange.vars(trainData, c("block" = 4))
+# Take mean by block
+trainData_mbb = trainData %>% group_by(subjectID, group, block) %>% summarise_each(funs(mean(., na.rm = TRUE))) %>% select(-c(trial, target_theta, wrong_trial))
+# Take absolute value to get |CE| for each 10 trial block
+#trainData_mbb[4:ncol(trainData_mbb)] = lapply(trainData_mbb[4:ncol(trainData_mbb)], function(x) abs(x)) # NOTE: this assumes columns 1-3 are the only factors
+# Find mean by group
+trainData_mbg = trainData_mbb %>% group_by(group, block) %>% summarise_all(funs(mean(., na.rm = TRUE), std.error(., na.rm = TRUE))) %>% select(-c(subjectID_mean))
+
+# Create a phase variable (phase1 = vb, phase2 = kb, phase3 = ex, phase4 = pe)
+phase1 = rep(1,16/blockSize)
+phase2 = rep(2,240/blockSize)
+phase3 = rep(3,16/blockSize)
+phase = rep(c(phase1,phase2,phase3),numGroup)
+trainData_mbg$phase = as.factor(phase)
+trainData_mbg = arrange.vars(trainData_mbg, c("phase"= 3))
+trainData_mbg$block = as.numeric(trainData_mbg$block) # make block numeric
+```
+
+## Plot individual P Data
+```{r Plot individual data and color by uptrial vs. downtrial. Consider this for determining mirror/iso}
+#Data = subset(trainData, trainData$subjectID == 4)
+#exposure_phase = 17:56
+#ggplot(data = Data[exposure_phase,], aes(x = trial, y = ide.bc, color = target_theta))+
+#  geom_point()+
+#  geom_smooth()
+```
+
+## Plot grouped, baseline corrected data POST-EXPOSURE ONLY
+```{r Plot ide.bc}
+pd = position_dodge(width = 0.4)
+block_ex = subset(trainData_mbg, trainData_mbg$phase==3)$block
+group_ex = subset(trainData_mbg, trainData_mbg$phase==3)$group
+ggplot(data = subset(trainData_mbg, trainData_mbg$phase==3), aes(x = block, y = ide.bc_mean, group = group_ex))+
+  geom_point(aes(color = group_ex), position = pd)+
+  geom_errorbar(data = subset(trainData_mbg, trainData_mbg$phase==3), aes(x = block, ymin = ide.bc_mean-ide.bc_std.error, ymax = ide.bc_mean+ide.bc_std.error, color = group),
+                position = pd, width = 0)+
+  geom_line(aes(color = group_ex), position = pd)
+```
+
+```{r Plot rmse.bc}
+pd = position_dodge(width = 0.4)
+block_ex = subset(trainData_mbg, trainData_mbg$phase==3)$block
+group_ex = subset(trainData_mbg, trainData_mbg$phase==3)$group
+ggplot(data = subset(trainData_mbg, trainData_mbg$phase==3), aes(x = block, y = rmse.bc_mean, group = group_ex))+
+  geom_point(aes(color = group_ex), position = pd)+
+  geom_errorbar(data = subset(trainData_mbg, trainData_mbg$phase==3), aes(x = block, ymin = rmse.bc_mean-rmse.bc_std.error, ymax = rmse.bc_mean+rmse.bc_std.error, color = group),
+                position = pd, width = 0)+
+  geom_line(aes(color = group_ex), position = pd)
+```
+
+## Stats
+```{r t-test during post-exposure}
+t.test(subset(trainData_mbb, trainData_mbb$block %in% c(65:68) & trainData_mbb$group %in% c(1))$ide.bc, subset(trainData_mbb, trainData_mbb$block %in% c(65:68) & trainData_mbb$group %in% c(2))$ide.bc, paired = FALSE)
+
+t.test(subset(trainData_mbb, trainData_mbb$block %in% c(65:68) & trainData_mbb$group %in% c(1))$rmse.bc, subset(trainData_mbb, trainData_mbb$block %in% c(65:68) & trainData_mbb$group %in% c(2))$rmse.bc, paired = FALSE)
+
+t.test(subset(trainData_mbb, trainData_mbb$block %in% c(65:68) & trainData_mbb$group %in% c(1))$mov_int.bc, subset(trainData_mbb, trainData_mbb$block %in% c(65:68) & trainData_mbb$group %in% c(2))$mov_int.bc, paired = FALSE)
+
+t.test(subset(trainData_mbb, trainData_mbb$block %in% c(65:68) & trainData_mbb$group %in% c(1))$MT_c, subset(trainData_mbb, trainData_mbb$block %in% c(65:68) & trainData_mbb$group %in% c(2))$MT_c, paired = FALSE)
+```

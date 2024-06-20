@@ -1,0 +1,265 @@
+---
+title: "Structural Learning and Transfer - Testing Phase"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+
+```
+## Install new packages
+```{r}
+#install.packages('plotrix')
+#install.packages("grid")
+#install.packages("reshape")
+#install.packages("ez")
+#install.packages("Cairo")
+```
+## Load packages
+```{r Load packages}
+library(plyr)
+library(ggplot2)
+library(plotrix)
+#library(grid)
+#library(gridExtra)
+#library(lattice)
+#library(reshape) # This one interferes with dplyr...don't use it.
+library(ez)
+library(dplyr)
+library(afex)
+```
+## Column rearranger
+```{r}
+##arrange df vars by position
+##'vars' must be a named vector, e.g. c("var.name"=1)
+arrange.vars <- function(data, vars){
+    ##stop if not a data.frame (but should work for matrices as well)
+    stopifnot(is.data.frame(data))
+
+    ##sort out inputs
+    data.nms <- names(data)
+    var.nr <- length(data.nms)
+    var.nms <- names(vars)
+    var.pos <- vars
+    ##sanity checks
+    stopifnot( !any(duplicated(var.nms)), 
+               !any(duplicated(var.pos)) )
+    stopifnot( is.character(var.nms), 
+               is.numeric(var.pos) )
+    stopifnot( all(var.nms %in% data.nms) )
+    stopifnot( all(var.pos > 0), 
+               all(var.pos <= var.nr) )
+
+    ##prepare output
+    out.vec <- character(var.nr)
+    out.vec[var.pos] <- var.nms
+    out.vec[-var.pos] <- data.nms[ !(data.nms %in% var.nms) ]
+    stopifnot( length(out.vec)==var.nr )
+
+    ##re-arrange vars by position
+    data <- data[ , out.vec]
+    return(data)
+}
+```
+## Load in Data
+```{r Load in Data, include=FALSE}
+#NOTE: only runs replication study data...
+#setwd("//Volumes//mnl//Data//UURAF Projects//UURAF 2019 Structural Learning and Transfer//struct_learn_paper//Post_Step_3_RH_resub") # Mac
+setwd("Z:\\Data\\UURAF Projects\\UURAF 2019 Structural Learning and Transfer\\struct_learn_paper\\Post_Step_3_RH_resub") # PC
+testData = read.delim('test_raw',header = FALSE, sep = ",", na.strings = 'NaN')
+
+numGroup = 2 # Number of groups (works only for my current dataset)
+
+colnames(testData) = c('group', 'subjectID', 'trial', 'target_theta',
+                     'MT', 'MT_c', 'MT_st',
+                     'rmse', 'rmse_c', 'rmse_st',
+                     'ide', 'ide_c', 'ide_st',
+                     'norm_jerk', 'norm_jerk_c', 'norm_jerk_st',
+                     'mov_int', 'mov_int_c', 'mov_int_st',
+                     'end_X_pos', 'end_Y_pos',
+                     'tstamp_start', 'tstamp_end',
+                     'velPeak', 'velPeak_c', 'velPeak_st',
+                     'velPeakTime', 'velPeakTime_c', 'velPeakTime_st',
+                     'RT', 'RT_c', 'RT_st',
+                     'fbrmse', 'fbrmse_c',
+                     'fbMT', 'fbMT_c',
+                     'fbmov_int', 'fbmov_int_c',
+                     'fbnorm_jerk', 'fbnorm_jerk_c',
+                     'wrong_trial')
+
+factors = c('group', 'subjectID')
+testData[,factors] = lapply(testData[,factors], factor)
+
+# This will get rid of outlier subjects BEFORE generating the dataset to follow.
+outliers = c(0)
+
+for (i in 1:length(outliers)){
+testData = subset(testData, testData$subjectID != outliers[i])
+}
+numSub = nrow(testData)/72 # number of subjects in the data.frame (scrubbed of outliers)
+numTrial = nrow(testData)/numSub # number of trials per subject
+
+# Rename entries for target_theta to indicate whether trial was "up" (90 deg), or "down" (270 deg)
+testData$target_theta = as.character(testData$target_theta)
+testData$target_theta = revalue(testData$target_theta, c("4.712389" = "down", "1.570796" = "up"))
+testData$target_theta = as.factor(testData$target_theta)
+
+# Some trials have RT less than 100ms (which is inhuman). Need to replace these values with NA, as well as velPeakTime
+testData = testData %>%
+  mutate(velPeakTime_c = replace(velPeakTime_c, which(RT_c < 100), NA)) %>%
+  mutate(MT_c = replace(MT_c, which(RT_c < 100), NA)) %>%
+  mutate(mov_int_c = replace(mov_int_c, which(RT_c < 100), NA)) %>%
+  mutate(RT_c = replace(RT_c, which(RT_c < 100), NA)) # WARNING: RT_c has to be last in this chain.
+
+# Create the average speed variable. This is computed as the total distance (mov_int) divided by total time (MT)
+testData = testData %>% mutate(avSpeed = mov_int_c/MT_c)
+
+# Define trial numbers for the different phases
+vb = 1:16
+ex = 17:56
+pe = 57:72
+```
+
+## Data Wrangling
+```{r Baseline correction}
+# NOTE: The previous version of this code had a poorly implemented baseline correction. This is much more streamlined and MORE ACCURATE
+testData = testData %>% group_by(subjectID) %>% mutate(MT.bc = MT_c - mean(MT_c[trial %in% 1:16], na.rm = T))
+testData = testData %>% group_by(subjectID) %>% mutate(rmse.bc = rmse_c - mean(rmse_c[trial %in% 1:16], na.rm = T))
+testData = testData %>% group_by(subjectID) %>% mutate(ide.bc = ide_c - mean(ide_c[trial %in% 1:16], na.rm = T))
+testData = testData %>% group_by(subjectID) %>% mutate(norm_jerk.bc = norm_jerk_c - mean(norm_jerk_c[trial %in% 1:16], na.rm = T))
+testData = testData %>% group_by(subjectID) %>% mutate(mov_int.bc = mov_int_c - mean(mov_int_c[trial %in% 1:16], na.rm = T))
+testData = testData %>% group_by(subjectID) %>% mutate(fbrmse.bc = fbrmse_c - mean(fbrmse_c[trial %in% 1:16], na.rm = T))
+testData = testData %>% group_by(subjectID) %>% mutate(fbMT.bc = fbMT_c - mean(fbMT_c[trial %in% 1:16], na.rm = T))
+testData = testData %>% group_by(subjectID) %>% mutate(fbmov_int.bc = fbmov_int_c - mean(fbmov_int_c[trial %in% 1:16], na.rm = T))
+testData = testData %>% group_by(subjectID) %>% mutate(fbnorm_jerk.bc = fbnorm_jerk_c - mean(fbnorm_jerk_c[trial %in% 1:16], na.rm = T))
+```
+
+```{r Caclulate means}
+# Create 'block' factor
+nr = nrow(testData)
+blockSize = 4
+testData$block = as.factor(rep(1:(numTrial/blockSize), each = blockSize, times = numSub))
+testData = arrange.vars(testData, c("block" = 4))
+# Take mean by block
+testData_mbb = testData %>% group_by(subjectID, group, block) %>%
+  summarise_each(funs(mean(., na.rm = TRUE)))
+  #select(-c(trial, target_theta, wrong_trial))
+
+keyboard # hard codebreak to supress plotting and stats
+```
+
+## Plot individual P Data
+```{r Plot individual data and color by uptrial vs. downtrial. Consider this for determining mirror/iso}
+#Data = subset(testData, testData$subjectID == 4)
+#exposure_phase = 17:56
+#ggplot(data = Data[exposure_phase,], aes(x = trial, y = ide.bc, color = target_theta))+
+#  geom_point()+
+#  geom_smooth()
+```
+
+## Plot grouped, baseline corrected data
+```{r Plot BINNED, grouped, baseline corrected data}
+siz = 3 # Used to scale the size of the data points
+ggplot()+
+  geom_point(data = testData_mbb, aes(x = block, y = ide.bc, color = group, shape = group), size = siz, stat = 'summary', fun.y = 'mean')+
+  geom_line(data = testData_mbb, aes(x = block, y = ide.bc, group = group, color = group), size = .5, stat = 'summary', fun.y = 'mean')+
+  geom_ribbon(data = subset(testData_mbb, block %in% c(1:4)), aes(x = as.numeric(block), y = ide.bc, fill = group), alpha = .3, stat = 'summary', fun.data = 'mean_se')+ # Baseline
+  geom_ribbon(data = subset(testData_mbb, block %in% c(5:14)), aes(x = as.numeric(block), y = ide.bc, fill = group), alpha = .3, stat = 'summary', fun.data = 'mean_se')+ # Exposure
+  geom_ribbon(data = subset(testData_mbb, block %in% c(15:18)), aes(x = as.numeric(block), y = ide.bc, fill = group), alpha = .3, stat = 'summary', fun.data = 'mean_se')+ # Post-Exposure
+  labs(y = "IDE (deg)")+
+  theme_bw()+
+  theme(axis.text.y = element_text(size = 16),
+        axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        legend.title = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())+
+  guides(fill = FALSE)+
+  scale_color_manual(labels = c("Control", "Structure"), values = c("#F8766D", "#00BFC4"))+
+  scale_shape_manual(labels = c("Control", "Structure"), values = c(16,17))+
+  geom_vline(xintercept = c(4.5, 14.5), linetype = "dotted")+
+  geom_hline(yintercept = c(0), linetype = "dotted")
+
+ggplot()+
+  geom_point(data = testData_mbb, aes(x = block, y = fbrmse.bc, color = group, shape = group), size = siz, stat = 'summary', fun.y = 'mean')+
+  geom_line(data = testData_mbb, aes(x = block, y = fbrmse.bc, group = group, color = group), size = .5, stat = 'summary', fun.y = 'mean')+
+  geom_ribbon(data = subset(testData_mbb, block %in% c(1:4)), aes(x = as.numeric(block), y = fbrmse.bc, fill = group), alpha = .3, stat = 'summary', fun.data = 'mean_se')+ # Baseline
+  geom_ribbon(data = subset(testData_mbb, block %in% c(5:14)), aes(x = as.numeric(block), y = fbrmse.bc, fill = group), alpha = .3, stat = 'summary', fun.data = 'mean_se')+ # Exposure
+  geom_ribbon(data = subset(testData_mbb, block %in% c(15:18)), aes(x = as.numeric(block), y = fbrmse.bc, fill = group), alpha = .3, stat = 'summary', fun.data = 'mean_se')+ # Post-Exposure
+  labs(y = "RMSE (deg)")+
+  theme_bw()+
+  theme(axis.text.y = element_text(size = 16),
+        axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        legend.title = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())+
+  guides(fill = FALSE)+
+  scale_color_manual(labels = c("Control", "Structure"), values = c("#F8766D", "#00BFC4"))+
+  scale_shape_manual(labels = c("Control", "Structure"), values = c(16,17))+
+  geom_vline(xintercept = c(4.5, 14.5), linetype = "dotted")+
+  geom_hline(yintercept = c(0), linetype = "dotted")
+
+```
+## Stats
+```{r nparLD non-parametric ANOVAs}
+library(nparLD)
+f1LDf1.ide = nparLD(ide.bc ~ block * group, data = subset(testData_mbb, testData_mbb$block %in% c(5,14)), subject = "subjectID")
+summary(f1LDf1.ide)
+f1LDf1.rmse = nparLD(fbrmse.bc ~ block * group, data = subset(testData_mbb, testData_mbb$block %in% c(5,14)), subject = "subjectID")
+summary(f1LDf1.rmse)
+```
+
+```{r ANOVA across exposure (first -> last)}
+# aov_ez(subset(testData_mbb, testData_mbb$block %in% c(5,14)), id = 'subjectID', dv = 'ide.bc', between = 'group', within = 'block')
+# aov_ez(subset(testData_mbb, testData_mbb$block %in% c(5,14)), id = 'subjectID', dv = 'rmse.bc', between = 'group', within = 'block')
+# aov_ez(subset(testData_mbb, testData_mbb$block %in% c(5,14)), id = 'subjectID', dv = 'mov_int.bc', between = 'group', within = "block")
+# aov_ez(subset(testData_mbb, testData_mbb$block %in% c(5,14)), id = 'subjectID', dv = 'MT_c', between = 'group', within = "block")
+# aov_ez(subset(testData_mbb, testData_mbb$block %in% c(5,14)), id = 'subjectID', dv = 'norm_jerk.bc', between = 'group', within = "block")
+
+# If you want partial eta squared, use this
+#aov_ez(subset(testData_mbb, testData_mbb$block %in% c(5,14)), id = 'subjectID', dv = 'mov_int.bc', between = 'group', within = "block", anova_table = list(es = 'pes'))
+```
+
+```{r t-test at first (or second) block exposure}
+# You can choose to compare first block (block = 5) or second block (6) of exposure
+wilcox.test(subset(testData_mbb, testData_mbb$block %in% c(5) & testData_mbb$group %in% c(1))$ide.bc,
+            subset(testData_mbb, testData_mbb$block %in% c(5) & testData_mbb$group %in% c(2))$ide.bc, paired = FALSE)
+
+wilcox.test(subset(testData_mbb, testData_mbb$block %in% c(5) & testData_mbb$group %in% c(1))$fbrmse.bc,
+            subset(testData_mbb, testData_mbb$block %in% c(5) & testData_mbb$group %in% c(2))$fbrmse.bc, paired = FALSE)
+
+#t.test(subset(testData_mbb, testData_mbb$block %in% c(6) & testData_mbb$group %in% c(1))$mov_int.bc,
+ #      subset(testData_mbb, testData_mbb$block %in% c(6) & testData_mbb$group %in% c(2))$mov_int.bc, paired = FALSE)
+
+#t.test(subset(testData_mbb, testData_mbb$block %in% c(6) & testData_mbb$group %in% c(1))$MT_c,
+ #      subset(testData_mbb, testData_mbb$block %in% c(6) & testData_mbb$group %in% c(2))$MT_c, paired = FALSE)
+
+#t.test(subset(testData_mbb, testData_mbb$block %in% c(6) & testData_mbb$group %in% c(1))$norm_jerk.bc,
+ #      subset(testData_mbb, testData_mbb$block %in% c(6) & testData_mbb$group %in% c(2))$norm_jerk.bc, paired = FALSE)
+```
+
+```{r t-test at last block exposure}
+wilcox.test(subset(testData_mbb, testData_mbb$block %in% c(14) & testData_mbb$group %in% c(1))$ide.bc,
+            subset(testData_mbb, testData_mbb$block %in% c(14) & testData_mbb$group %in% c(2))$ide.bc, paired = FALSE)
+wilcox.test(subset(testData_mbb, testData_mbb$block %in% c(14) & testData_mbb$group %in% c(1))$fbrmse.bc,
+            subset(testData_mbb, testData_mbb$block %in% c(14) & testData_mbb$group %in% c(2))$fbrmse.bc, paired = FALSE)
+
+# t.test(subset(testData_mbb, testData_mbb$block %in% c(14) & testData_mbb$group %in% c(1))$mov_int.bc, subset(testData_mbb, testData_mbb$block %in% c(14) & testData_mbb$group %in% c(2))$mov_int.bc, paired = FALSE)
+# t.test(subset(testData_mbb, testData_mbb$block %in% c(14) & testData_mbb$group %in% c(1))$MT_c, subset(testData_mbb, testData_mbb$block %in% c(14) & testData_mbb$group %in% c(2))$MT_c, paired = FALSE)
+# t.test(subset(testData_mbb, testData_mbb$block %in% c(14) & testData_mbb$group %in% c(1))$norm_jerk.bc, subset(testData_mbb, testData_mbb$block %in% c(14) & testData_mbb$group %in% c(2))$norm_jerk.bc, paired = FALSE)
+```
+
+```{r t-test at first block post-exposure}
+wilcox.test(subset(testData_mbb, testData_mbb$block %in% c(15) & testData_mbb$group %in% c(1))$ide.bc,
+            subset(testData_mbb, testData_mbb$block %in% c(15) & testData_mbb$group %in% c(2))$ide.bc, paired = FALSE)
+wilcox.test(subset(testData_mbb, testData_mbb$block %in% c(15) & testData_mbb$group %in% c(1))$fbrmse.bc,
+            subset(testData_mbb, testData_mbb$block %in% c(15) & testData_mbb$group %in% c(2))$fbrmse.bc, paired = FALSE)
+
+
+# t.test(subset(testData_mbb, testData_mbb$block %in% c(15) & testData_mbb$group %in% c(1))$mov_int.bc, subset(testData_mbb, testData_mbb$block %in% c(15) & testData_mbb$group %in% c(2))$mov_int.bc, paired = FALSE)
+# t.test(subset(testData_mbb, testData_mbb$block %in% c(15) & testData_mbb$group %in% c(1))$MT_c, subset(testData_mbb, testData_mbb$block %in% c(15) & testData_mbb$group %in% c(2))$MT_c, paired = FALSE)
+# t.test(subset(testData_mbb, testData_mbb$block %in% c(15) & testData_mbb$group %in% c(1))$norm_jerk.bc, subset(testData_mbb, testData_mbb$block %in% c(15) & testData_mbb$group %in% c(2))$norm_jerk.bc, paired = FALSE)
+```
